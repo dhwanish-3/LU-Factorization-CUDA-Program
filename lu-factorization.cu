@@ -1,12 +1,15 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 #include <cuda_runtime.h>
-#include <math.h>
+#include <fstream>
 #include <iostream>
 
 void readInput(const char *filename, int &N, double **A, double **B) {
     std::ifstream infile(filename);
+    if (!infile) {
+        std::cerr << "Error opening file: " << filename << std::endl;
+        exit(EXIT_FAILURE);
+    }
     infile >> N;
 
     *A = (double *)malloc(N * N * sizeof(double));
@@ -18,39 +21,42 @@ void readInput(const char *filename, int &N, double **A, double **B) {
 
     for (int i = 0; i < N; ++i)
         infile >> (*B)[i];
-    
+
     infile.close();
 }
 
 __global__ void luDecomposition(double *A, double *L, double *U, int N) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (row < N) {
         for (int j = 0; j < N; j++) {
             if (j < row) {
-                L[row * N + j] = A[row * N + j]; // copy
-                U[j * N + row] = 0; // U has zeros below diagonal
+                L[row * N + j] = A[row * N + j]; // L below diagonal
+                U[row * N + j] = A[row * N + j]; // U has zeros below diagonal
             } else {
-                U[j * N + row] = A[row * N + j]; // copy what ?
-                L[row * N + j] = (row == j) ? 1.0 : 0.0;
+                U[row * N + j] = A[row * N + j]; // U above diagonal
+                L[row * N + j] = (row == j) ? 1.0 : 0.0; // L diagonal elements
             }
         }
     }
 
+    __syncthreads(); // Ensure all threads have updated L and U
+
     // Perform elimination
     for (int k = 0; k < N; k++) {
         if (row > k) {
-            double factor = U[k * N + row] / U[k * N + k];
+            double factor = U[k * N + k] != 0 ? (U[row * N + k] / U[k * N + k]) : 0.0;
             for (int j = k; j < N; j++) {
-                U[k * N + j] -= factor * U[row * N + j];
+                U[row * N + j] -= factor * U[k * N + j];
             }
             L[row * N + k] = factor;
         }
     }
 }
 
+
 __global__ void forwardSubstitution(double *L, double *B, double *Y, int N) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
     if (row < N) {
         Y[row] = B[row];
         for (int j = 0; j < row; j++) {
@@ -60,7 +66,7 @@ __global__ void forwardSubstitution(double *L, double *B, double *Y, int N) {
 }
 
 __global__ void backwardSubstitution(double *U, double *Y, double *X, int N) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
     if (row < N) {
         X[row] = Y[row];
         for (int j = row + 1; j < N; j++) {
@@ -72,39 +78,80 @@ __global__ void backwardSubstitution(double *U, double *Y, double *X, int N) {
 
 int main() {
     int N;
-    double *A, *B;
+    double *A, *B, *X;
     readInput("input.txt", N, &A, &B);
+    X = (double *)malloc(N * sizeof(double));
 
-    double *L, *U, *Y, *X;
-    cudaMallocManaged(&L, N * N * sizeof(double));
-    cudaMallocManaged(&U, N * N * sizeof(double));
-    cudaMallocManaged(&Y, N * sizeof(double));
-    cudaMallocManaged(&X, N * sizeof(double));
-
-    int block_size = 256;
-    int num_blocks = (N + block_size - 1) / block_size;
-
-    luDecomposition<<<num_blocks, block_size>>>(A, L, U, N);
-    forwardSubstitution<<<num_blocks, block_size>>>(L, B, Y, N);
-    backwardSubstitution<<<num_blocks, block_size>>>(U, Y, X, N);
-
-    cudaDeviceSynchronize();
-
+    // print N, A, B
+    printf("N: %d\n", N);
+    printf("A:\n");
     for (int i = 0; i < N; i++) {
-        printf("%f\n", X[i]);
+        for (int j = 0; j < N; j++) {
+            printf("%f ", A[i * N + j]);
+        }
+        printf("\n");
     }
+    printf("B:\n");
+    for (int i = 0; i < N; i++) {
+        printf("%f\n", B[i]);
+    }
+
+    double *d_A, *d_B, *d_L, *d_U, *d_Y, *d_X;
+    cudaMalloc(&d_A, N * N * sizeof(double));
+    cudaMalloc(&d_B, N * sizeof(double));
+    cudaMalloc(&d_L, N * N * sizeof(double));
+    cudaMalloc(&d_U, N * N * sizeof(double));
+    cudaMalloc(&d_Y, N * sizeof(double));
+    cudaMalloc(&d_X, N * sizeof(double));
+
+    cudaMemcpy(d_A, A, N * N * sizeof(double), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, B, N * sizeof(double), cudaMemcpyHostToDevice);
+
+    dim3 gridConfig(1, 1, 1);
+    dim3 blockConfig(N, N, 1);
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
     cudaEventRecord(start);
-    // Call your LU decomposition kernel here
+
+    luDecomposition<<<gridConfig, blockConfig>>>(d_A, d_L, d_U, N);
+    forwardSubstitution<<<gridConfig, blockConfig>>>(d_L, d_B, d_Y, N);
+    backwardSubstitution<<<gridConfig, blockConfig>>>(d_U, d_Y, d_X, N);
+    // int blockSize = N*N; // or any suitable size
+    // int numBlocks = 1;
+    // luDecomposition<<<numBlocks, blockSize>>>(d_A, d_L, d_U, N);
+    // forwardSubstitution<<<numBlocks, blockSize>>>(d_L, d_B, d_Y, N);
+    // backwardSubstitution<<<numBlocks, blockSize>>>(d_U, d_Y, d_X, N);
+
     cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
+
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(X, d_X, N * sizeof(double), cudaMemcpyDeviceToHost);
+
+    printf("X:\n");
+    for (int i = 0; i < N; i++) {
+        printf("%f\n", X[i]);
+    }
 
     float milliseconds = 0;
     cudaEventElapsedTime(&milliseconds, start, stop);
     printf("LU Decomposition time: %f ms\n", milliseconds);
+
+
+    // Free device memory
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_L);
+    cudaFree(d_U);
+    cudaFree(d_Y);
+    cudaFree(d_X);
+
+    // Free host memory
+    free(A);
+    free(B);
+    free(X);
     return 0;
 }
