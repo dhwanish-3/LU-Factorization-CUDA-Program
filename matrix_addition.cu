@@ -39,8 +39,8 @@ int main() {
     cudaMemcpy(dA, A, N * N * sizeof(double), cudaMemcpyHostToDevice);
     cudaMemcpy(dB, B, N * N * sizeof(double), cudaMemcpyHostToDevice);
 
-    int block_size = 1;
-    int num_blocks = 4;
+    dim3 gridConfig(1, 1);
+    dim3 blockConfig(N, N);
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -48,7 +48,7 @@ int main() {
 
     cudaEventRecord(start);
 
-    matrix_addition<<<num_blocks, block_size>>>(N, dA, dB, dsol);
+    matrix_addition<<<gridConfig, blockConfig>>>(N, dA, dB, dsol);
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
