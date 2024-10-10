@@ -66,13 +66,18 @@ __global__ void forwardSubstitution(double *L, double *B, double *Y, int N) {
 }
 
 __global__ void backwardSubstitution(double *U, double *Y, double *X, int N) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    if (row < N) {
-        X[row] = Y[row];
-        for (int j = row + 1; j < N; j++) {
-            X[row] -= U[row * N + j] * X[j];
+    // Calculate the row index in the reversed order
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    // Iterate through the rows in reverse order
+    for (int r = N - 1 - row; r >= 0; r -= blockDim.x) {
+        if (r >= 0) {
+            X[r] = Y[r]; // Start with Y
+            for (int j = r + 1; j < N; j++) {
+                X[r] -= U[r * N + j] * X[j]; // Update X[r]
+            }
+            X[r] /= U[r * N + r]; // Normalize
         }
-        X[row] /= U[row * N + row];
     }
 }
 
@@ -108,7 +113,7 @@ int main() {
     cudaMemcpy(d_B, B, N * sizeof(double), cudaMemcpyHostToDevice);
 
     dim3 gridConfig(1, 1, 1);
-    dim3 blockConfig(N, N, 1);
+    dim3 blockConfig(1, N, 1);
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -117,13 +122,43 @@ int main() {
     cudaEventRecord(start);
 
     luDecomposition<<<gridConfig, blockConfig>>>(d_A, d_L, d_U, N);
+
+
+    double* L = (double*)malloc(N * N * sizeof(double));
+    double* U = (double*)malloc(N * N * sizeof(double));
+
+    cudaMemcpy(L, d_L, N * N * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(U, d_U, N * N * sizeof(double), cudaMemcpyDeviceToHost);
+
+    // print L and U
+    printf("L:\n");
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            printf("%f ", L[i * N + j]);
+        }
+        printf("\n");
+    }
+    printf("U:\n");
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            printf("%f ", U[i * N + j]);
+        }
+        printf("\n");
+    }
+    
     forwardSubstitution<<<gridConfig, blockConfig>>>(d_L, d_B, d_Y, N);
+
+    double* Y = (double*)malloc(N * sizeof(double));
+
+    cudaMemcpy(Y, d_Y, N * sizeof(double), cudaMemcpyDeviceToHost);
+
+    // print Y
+    printf("Y:\n");
+    for (int i = 0; i < N; i++) {
+        printf("%f\n", Y[i]);
+    }
+    
     backwardSubstitution<<<gridConfig, blockConfig>>>(d_U, d_Y, d_X, N);
-    // int blockSize = N*N; // or any suitable size
-    // int numBlocks = 1;
-    // luDecomposition<<<numBlocks, blockSize>>>(d_A, d_L, d_U, N);
-    // forwardSubstitution<<<numBlocks, blockSize>>>(d_L, d_B, d_Y, N);
-    // backwardSubstitution<<<numBlocks, blockSize>>>(d_U, d_Y, d_X, N);
 
     cudaEventRecord(stop);
 
@@ -155,3 +190,4 @@ int main() {
     free(X);
     return 0;
 }
+
