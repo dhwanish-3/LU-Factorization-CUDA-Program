@@ -41,10 +41,10 @@ __global__ void luDecomposition(double *A, double *L, double *U, int N) {
     if (row < N) {
         for (int j = 0; j < N; j++) {
             if (j < row) {
-                L[row * N + j] = A[row * N + j];
-                U[j * N + row] = 0;
+                L[row * N + j] = A[row * N + j]; // copy
+                U[j * N + row] = 0; // U has zeros below diagonal
             } else {
-                U[j * N + row] = A[row * N + j];
+                U[j * N + row] = A[row * N + j]; // copy what ?
                 L[row * N + j] = (row == j) ? 1.0 : 0.0;
             }
         }
