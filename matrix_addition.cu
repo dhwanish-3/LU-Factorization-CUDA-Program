@@ -27,7 +27,6 @@ int main() {
     A = (double*)malloc(N * N * sizeof(double));
     B = (double*)malloc(N * N * sizeof(double));
     sol = (double*)malloc(N * N * sizeof(double));
-
     for (int i = 0; i < N * N; i++) {
         A[i] = 1.0;
         B[i] = 2.0;
@@ -43,7 +42,16 @@ int main() {
     int block_size = 1;
     int num_blocks = 4;
 
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
+
     matrix_addition<<<num_blocks, block_size>>>(N, dA, dB, dsol);
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
 
     cudaMemcpy(sol, dsol, N * N * sizeof(double), cudaMemcpyDeviceToHost);
 
@@ -51,10 +59,14 @@ int main() {
 
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
-            printf("%f ", dsol[i * N + j]);
+            printf("%f ", sol[i * N + j]);
         }
         printf("\n");
     }
+
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    printf("Matrix Addition time: %f ms\n", milliseconds);
 
     return 0;
 }
