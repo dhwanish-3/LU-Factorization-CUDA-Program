@@ -57,34 +57,68 @@ __global__ void luDecomposition(double *A, double *L, double *U, int N) {
 
 __global__ void forwardSubstitution(double *L, double *B, double *Y, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
+    extern __shared__ double shared[];
+    double *L_shared = (double *)shared;
+    double *B_shared = (double *)&L_shared[N * N];
+    double *Y_shared = (double *)&B_shared[N];
     if (row < N) {
-        Y[row] = B[row];
+        for (int j = 0; j < N; j++) {
+            L_shared[row * N + j] = L[row * N + j];
+        }
+        B_shared[row] = B[row];
+        Y_shared[row] = B_shared[row];
         for (int j = 0; j < row; j++) {
-            Y[row] -= L[row * N + j] * Y[j];
+            Y_shared[row] -= L_shared[row * N + j] * Y_shared[j];
+        }
+        for (int j = 0; j < N; j++) {
+            Y[row] = Y_shared[row];
         }
     }
 }
 
 __global__ void backwardSubstitution(double *U, double *Y, double *X, int N) {
     // Calculate the row index in the reversed order
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    extern __shared__ double shared[];
+    double *U_shared = (double *)shared;
+    double *Y_shared = (double *)&U_shared[N * N];
+    double *X_shared = (double *)&Y_shared[N];
     
     // Iterate through the rows in reverse order
-    for (int r = N - 1 - row; r >= 0; r -= blockDim.x) {
-        if (r >= 0) {
-            X[r] = Y[r]; // Start with Y
-            for (int j = r + 1; j < N; j++) {
-                X[r] -= U[r * N + j] * X[j]; // Update X[r]
-            }
-            X[r] /= U[r * N + r]; // Normalize
+    // for (int r = N - 1 - row; r >= 0; r -= blockDim.x) {
+    //     if (r >= 0) {
+    //         X[r] = Y[r]; // Start with Y
+    //         for (int j = r + 1; j < N; j++) {
+    //             X[r] -= U[r * N + j] * X[j]; // Update X[r]
+    //         }
+    //         X[r] /= U[r * N + r]; // Normalize
+    //     }
+    // }
+    // my code
+    if (row < N) {
+    //   printf("row = %d\n", row);
+        row = N - row -1;
+        for (int j = 0; j < N; j++) {
+            U_shared[row * N + j] = U[row * N + j];
         }
+        Y_shared[row] = Y[row];
+        X_shared[row] = Y_shared[row];
+        for (int j = N - 1; j >= row + 1; j--) {
+            // printf("X[%d] used = %f\n", j, X[j]);
+            X_shared[row] -= U_shared[row * N + j] * X[j];
+        }
+        X_shared[row] /= U_shared[row * N + row];
+        for (int j = 0; j < N; j++) {
+            X[row] = X_shared[row];
+        }
+        // printf("X[%d] = %f\n", row, X[row]);
     }
 }
 
 int main() {
     int N;
     double *A, *B, *X;
-    readInput("input.txt", N, &A, &B);
+    readInput("input10.txt", N, &A, &B);
     X = (double *)malloc(N * sizeof(double));
 
     // print N, A, B
@@ -114,6 +148,8 @@ int main() {
 
     dim3 gridConfig(1, 1, 1);
     dim3 blockConfig(1, N, 1);
+
+    int sharedMemSize = N * N * sizeof(double) + N * sizeof(double) + N * sizeof(double);
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
@@ -146,7 +182,7 @@ int main() {
         printf("\n");
     }
     
-    forwardSubstitution<<<gridConfig, blockConfig>>>(d_L, d_B, d_Y, N);
+    forwardSubstitution<<<gridConfig, blockConfig, sharedMemSize>>>(d_L, d_B, d_Y, N);
 
     double* Y = (double*)malloc(N * sizeof(double));
 
@@ -158,7 +194,7 @@ int main() {
         printf("%f\n", Y[i]);
     }
     
-    backwardSubstitution<<<gridConfig, blockConfig>>>(d_U, d_Y, d_X, N);
+    backwardSubstitution<<<gridConfig, blockConfig, sharedMemSize>>>(d_U, d_Y, d_X, N);
 
     cudaEventRecord(stop);
 
