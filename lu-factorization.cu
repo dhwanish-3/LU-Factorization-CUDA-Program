@@ -55,63 +55,22 @@ __global__ void luDecomposition(double *A, double *L, double *U, int N) {
 }
 
 
-__global__ void forwardSubstitution(double *L, double *B, double *Y, int N) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    extern __shared__ double shared[];
-    double *L_shared = (double *)shared;
-    double *B_shared = (double *)&L_shared[N * N];
-    double *Y_shared = (double *)&B_shared[N];
-    if (row < N) {
-        for (int j = 0; j < N; j++) {
-            L_shared[row * N + j] = L[row * N + j];
-        }
-        B_shared[row] = B[row];
-        Y_shared[row] = B_shared[row];
+void forwardSubstitution(double* A, double* B, double* Y, int N) {
+    for (int row = 0; row < N; row++) {
+        Y[row] = B[row];
         for (int j = 0; j < row; j++) {
-            Y_shared[row] -= L_shared[row * N + j] * Y_shared[j];
-        }
-        for (int j = 0; j < N; j++) {
-            Y[row] = Y_shared[row];
+            Y[row] -= A[row * N + j] * Y[j];
         }
     }
 }
 
-__global__ void backwardSubstitution(double *U, double *Y, double *X, int N) {
-    // Calculate the row index in the reversed order
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    extern __shared__ double shared[];
-    double *U_shared = (double *)shared;
-    double *Y_shared = (double *)&U_shared[N * N];
-    double *X_shared = (double *)&Y_shared[N];
-    
-    // Iterate through the rows in reverse order
-    // for (int r = N - 1 - row; r >= 0; r -= blockDim.x) {
-    //     if (r >= 0) {
-    //         X[r] = Y[r]; // Start with Y
-    //         for (int j = r + 1; j < N; j++) {
-    //             X[r] -= U[r * N + j] * X[j]; // Update X[r]
-    //         }
-    //         X[r] /= U[r * N + r]; // Normalize
-    //     }
-    // }
-    // my code
-    if (row < N) {
-    //   printf("row = %d\n", row);
-        row = N - row -1;
-        for (int j = 0; j < N; j++) {
-            U_shared[row * N + j] = U[row * N + j];
+void backwardSubstitution(double* A, double* B, double* X, int N) {
+    for (int row = N - 1; row >= 0; row--) {
+        X[row] = B[row];
+        for (int j = row + 1; j < N; j++) {
+            X[row] -= A[row * N + j] * X[j];
         }
-        Y_shared[row] = Y[row];
-        X_shared[row] = Y_shared[row];
-        for (int j = N - 1; j >= row + 1; j--) {
-            // printf("X[%d] used = %f\n", j, X[j]);
-            X_shared[row] -= U_shared[row * N + j] * X[j];
-        }
-        X_shared[row] /= U_shared[row * N + row];
-        for (int j = 0; j < N; j++) {
-            X[row] = X_shared[row];
-        }
-        // printf("X[%d] = %f\n", row, X[row]);
+        X[row] /= A[row * N + row];
     }
 }
 
@@ -166,6 +125,14 @@ int main() {
     cudaMemcpy(L, d_L, N * N * sizeof(double), cudaMemcpyDeviceToHost);
     cudaMemcpy(U, d_U, N * N * sizeof(double), cudaMemcpyDeviceToHost);
 
+    cudaEventRecord(stop);
+
+    cudaDeviceSynchronize();
+
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    printf("LU Decomposition time: %f ms\n", milliseconds);
+
     // print L and U
     printf("L:\n");
     for (int i = 0; i < N; i++) {
@@ -182,34 +149,13 @@ int main() {
         printf("\n");
     }
     
-    forwardSubstitution<<<gridConfig, blockConfig, sharedMemSize>>>(d_L, d_B, d_Y, N);
-
-    double* Y = (double*)malloc(N * sizeof(double));
-
-    cudaMemcpy(Y, d_Y, N * sizeof(double), cudaMemcpyDeviceToHost);
-
-    // print Y
-    printf("Y:\n");
-    for (int i = 0; i < N; i++) {
-        printf("%f\n", Y[i]);
-    }
-    
-    backwardSubstitution<<<gridConfig, blockConfig, sharedMemSize>>>(d_U, d_Y, d_X, N);
-
-    cudaEventRecord(stop);
-
-    cudaDeviceSynchronize();
-
-    cudaMemcpy(X, d_X, N * sizeof(double), cudaMemcpyDeviceToHost);
+    forwardSubstitution(L, B, X, N);
+    backwardSubstitution(U, X, X, N);
 
     printf("X:\n");
     for (int i = 0; i < N; i++) {
         printf("%f\n", X[i]);
     }
-
-    float milliseconds = 0;
-    cudaEventElapsedTime(&milliseconds, start, stop);
-    printf("LU Decomposition time: %f ms\n", milliseconds);
 
 
     // Free device memory
