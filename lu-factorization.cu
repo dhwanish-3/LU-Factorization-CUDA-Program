@@ -46,9 +46,10 @@ __global__ void luDecomposition(double *A, double *L, double *U, int N) {
     for (int k = 0; k < N; k++) {
         if (row > k) {
             double factor = U[k * N + k] != 0 ? (U[row * N + k] / U[k * N + k]) : 0.0;
-            for (int j = k; j < N; j++) {
+            for (int j = k + 1; j < N; j++) {
                 U[row * N + j] -= factor * U[k * N + j];
             }
+            U[row * N + k] = 0.0;
             L[row * N + k] = factor;
         }
     }
@@ -157,6 +158,37 @@ int main() {
         printf("%f\n", X[i]);
     }
 
+    std::ofstream outfile("output.txt");
+    if (!outfile) {
+        std::cerr << "Error opening file for writing: output.txt" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    outfile << N << std::endl;
+
+    // Write L matrix
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            outfile << L[i * N + j] << " ";
+        }
+        outfile << std::endl;
+    }
+
+    // Write U matrix
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            outfile << U[i * N + j] << " ";
+        }
+        outfile << std::endl;
+    }
+
+    // Write solution vector X
+    for (int i = 0; i < N; i++) {
+        outfile << X[i] << std::endl;
+    }
+
+    outfile.close();
+
 
     // Free device memory
     cudaFree(d_A);
@@ -172,4 +204,3 @@ int main() {
     free(X);
     return 0;
 }
-
