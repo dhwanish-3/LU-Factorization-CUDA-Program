@@ -88,10 +88,14 @@ __global__ void elimination(double* L, double* U, int n, int index, int bsize) {
 }
 
 __global__ void scaleIndex(double* U, double *L, int n, int index) {
+    int id = index + threadIdx.x + 1;
     int start = (index * n + index);
     L[start] = 1; // diagonal elements of L
-    for (int i = index + 1; i < n; ++i) {
-        L[i * n + index] = (U[i * n + index] / U[start]);
+    // for (int i = index + 1; i < n; ++i) {
+    //     L[i * n + index] = (U[i * n + index] / U[start]);
+    // }
+    if (id < n) {
+        L[id * n + index] = (U[id * n + index] / U[start]);
     }
 }
 
@@ -144,7 +148,7 @@ int main(int argc, char** argv) {
     cudaEventCreate(&stopLU);
     for (int i = 0; i < N; ++i) {
         cudaEventRecord(startLU);
-        scaleIndex<<<1,1>>>(d_U, d_L, N, i);
+        scaleIndex<<<1,N>>>(d_U, d_L, N, i);
         cudaEventRecord(stopLU);
         cudaEventSynchronize(stopLU);
         float l1_time = 0;
