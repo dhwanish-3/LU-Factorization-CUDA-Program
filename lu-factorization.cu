@@ -3,6 +3,12 @@
 #include <cuda_runtime.h>
 #include <fstream>
 #include <iostream>
+#include <chrono>
+
+std::chrono::duration<double> read_time(0);
+std::chrono::duration<double> l_time(0);
+std::chrono::duration<double> u_time(0);
+std::chrono::duration<double> total_time(0);
 
 void readInput(const char *filename, int &N, double **A, double **B) {
     std::ifstream infile(filename);
@@ -28,29 +34,38 @@ void readInput(const char *filename, int &N, double **A, double **B) {
 __global__ void luDecomposition(double *A, double *L, double *U, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
 
+    auto start = std::chrono::high_resolution_clock::now();
     if (row < N) {
         for (int j = 0; j < N; j++) {
             if (j < row) {
                 L[row * N + j] = A[row * N + j]; // L below diagonal
-                U[row * N + j] = A[row * N + j]; // U has zeros below diagonal
+                U[row * N + j] = A[row * N + j]; // U below diagonal
             } else {
                 U[row * N + j] = A[row * N + j]; // U above diagonal
                 L[row * N + j] = (row == j) ? 1.0 : 0.0; // L diagonal elements
             }
         }
     }
+    auto end = std::chrono::high_resolution_clock::now();
+    l_time += end - start;
+    u_time += end - start;
 
     __syncthreads(); // Ensure all threads have updated L and U
 
     // Perform elimination
     for (int k = 0; k < N; k++) {
         if (row > k) {
+            start = std::chrono::high_resolution_clock::now();
             double factor = U[k * N + k] != 0 ? (U[row * N + k] / U[k * N + k]) : 0.0;
+            U[row * N + k] = 0.0;
+            L[row * N + k] = factor;
+            end = std::chrono::high_resolution_clock::now();
+            l_time += end - start;
             for (int j = k + 1; j < N; j++) {
                 U[row * N + j] -= factor * U[k * N + j];
             }
-            U[row * N + k] = 0.0;
-            L[row * N + k] = factor;
+            end = std::chrono::high_resolution_clock::now();
+            u_time += end - start;
         }
     }
 }
@@ -75,26 +90,19 @@ void backwardSubstitution(double* A, double* B, double* X, int N) {
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc < 3) {
+        std::cerr << "Usage: ./main.cu " << "<input_file>" << "<output_file>" << std::endl;
+        exit(EXIT_FAILURE);
+    }
     int N;
     double *A, *B, *X;
-    readInput("input10.txt", N, &A, &B);
+    auto read_start = std::chrono::high_resolution_clock::now();
+    readInput(argv[1], N, &A, &B);
+    auto read_end = std::chrono::high_resolution_clock::now();
+    read_time = read_end - read_start;
+
     X = (double *)malloc(N * sizeof(double));
-
-    // print N, A, B
-    printf("N: %d\n", N);
-    printf("A:\n");
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            printf("%f ", A[i * N + j]);
-        }
-        printf("\n");
-    }
-    printf("B:\n");
-    for (int i = 0; i < N; i++) {
-        printf("%f\n", B[i]);
-    }
-
     double *d_A, *d_B, *d_L, *d_U, *d_Y, *d_X;
     cudaMalloc(&d_A, N * N * sizeof(double));
     cudaMalloc(&d_B, N * sizeof(double));
@@ -109,16 +117,13 @@ int main() {
     dim3 gridConfig(1, 1, 1);
     dim3 blockConfig(1, N, 1);
 
-    int sharedMemSize = N * N * sizeof(double) + N * sizeof(double) + N * sizeof(double);
+    // int sharedMemSize = N * N * sizeof(double) + N * sizeof(double) + N * sizeof(double);
 
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    cudaEventRecord(start);
-
+    auto start = std::chrono::high_resolution_clock::now();
     luDecomposition<<<gridConfig, blockConfig>>>(d_A, d_L, d_U, N);
+    auto end = std::chrono::high_resolution_clock::now();
 
+    auto lu_decomposition_time = end - start;
 
     double* L = (double*)malloc(N * N * sizeof(double));
     double* U = (double*)malloc(N * N * sizeof(double));
@@ -126,13 +131,7 @@ int main() {
     cudaMemcpy(L, d_L, N * N * sizeof(double), cudaMemcpyDeviceToHost);
     cudaMemcpy(U, d_U, N * N * sizeof(double), cudaMemcpyDeviceToHost);
 
-    cudaEventRecord(stop);
-
     cudaDeviceSynchronize();
-
-    float milliseconds = 0;
-    cudaEventElapsedTime(&milliseconds, start, stop);
-    printf("LU Decomposition time: %f ms\n", milliseconds);
 
     // print L and U
     printf("L:\n");
@@ -150,17 +149,26 @@ int main() {
         printf("\n");
     }
     
+    auto start_sub = std::chrono::high_resolution_clock::now();
     forwardSubstitution(L, B, X, N);
     backwardSubstitution(U, X, X, N);
+    auto end_sub = std::chrono::high_resolution_clock::now();
+
+    total_time =  lu_decomposition_time + end_sub - start_sub;
+
+    printf("Read time: %f ms\n", read_time.count());
+    printf("L time: %f ms\n", l_time.count());
+    printf("U time: %f ms\n", u_time.count());
+    printf("Total time: %f ms\n", total_time.count());
 
     printf("X:\n");
     for (int i = 0; i < N; i++) {
         printf("%f\n", X[i]);
     }
 
-    std::ofstream outfile("output.txt");
+    std::ofstream outfile(argv[2]);
     if (!outfile) {
-        std::cerr << "Error opening file for writing: output.txt" << std::endl;
+        std::cerr << "Error opening file for writing: "<< argv[2] << std::endl;
         exit(EXIT_FAILURE);
     }
 
@@ -188,7 +196,6 @@ int main() {
     }
 
     outfile.close();
-
 
     // Free device memory
     cudaFree(d_A);
