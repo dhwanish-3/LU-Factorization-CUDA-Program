@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <chrono>
+#include <iomanip>
 
 std::chrono::duration<double> read_time(0);
 std::chrono::duration<double> l_time(0);
@@ -42,26 +43,25 @@ void writeToFile(const char* filename, int N, double* L, double* U, double* X) {
     }
 
     outfile << N << std::endl;
-
+    
+    outfile << std::setprecision(17); // Set precision to 17
     // Write L matrix
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
-            outfile << L[i * N + j] << " ";
+            outfile << L[i * N + j] << "\n";
         }
-        outfile << std::endl;
     }
 
     // Write U matrix
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
-            outfile << U[i * N + j] << " ";
+            outfile << U[i * N + j] << "\n";
         }
-        outfile << std::endl;
     }
 
     // Write X
     for (int i = 0; i < N; i++) {
-        outfile << X[i] << std::endl;
+        outfile << X[i] << "\n";
     }
 
     outfile.close();
