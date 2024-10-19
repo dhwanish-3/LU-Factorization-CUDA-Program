@@ -1,0 +1,5 @@
+Read time: 0.0943635s
+L time: 0.00455958s
+U time: 0.0228015s
+LU decomposition time: 0.0273611s
+Total time: 0.122159s

@@ -1,3 +1,6 @@
+// My attempt at parallelizing the forward and backward substitution
+
+
 __global__ void forwardSubstitution(double *L, double *B, double *Y, int N) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
     extern __shared__ double shared[];
