@@ -11,7 +11,7 @@ std::chrono::duration<double> u_time(0);
 std::chrono::duration<double> lu_decomposition_time(0);
 std::chrono::duration<double> total_time(0);
 
-#define TILE 16
+#define TILE 8
 
 void readInput(const char *filename, int &N, double **A, double **B) {
     std::ifstream infile(filename);
@@ -68,34 +68,64 @@ void writeToFile(const char* filename, int N, double* L, double* U, double* X) {
 }
 
 // Row elimination Kernel
-__global__ void elimination(double* L, double* U, int n, int index, int bsize) {
-    int idThread = threadIdx.x;
-    int idBlock = blockIdx.x;
-
-    int pivotRow = (index * n);
-    int currentRow = (((bsize * idBlock) + idThread) * n);
+__global__ void rowElimination(double* L, double* U, int N, int index) {
+    int pivotRow = index * N;
+    int currentRow = (blockDim.x * blockIdx.x + threadIdx.x) * N;
     int start = currentRow + index;
-    int end = currentRow + n;
+    int end = currentRow + N;
 
-    if (currentRow > pivotRow && currentRow < n * n) {
+    extern __shared__ double Us[];
+    for (int i = 0; i < N; i++) {
+        Us[i] = U[pivotRow + i];
+    }
+
+    if (currentRow > pivotRow && currentRow < N * N) {
+        double pivot = L[start];
         for (int i = currentRow; i < start + 1; i++) {
             U[i] = 0;
         }
         for (int i = start + 1; i < end; ++i) {
-            U[i] = U[i] - (L[start] * U[pivotRow + (i - currentRow)]);
+            U[i] = U[i] - (pivot * Us[i - currentRow]);
         }
     }
 }
 
-__global__ void scaleIndex(double* U, double *L, int n, int index) {
+// kernel without shared memory
+// __global__ void rowElimination(double* L, double* U, int N, int index, int bsize) {
+//     int pivotRow = index * N;
+//     int currentRow = ((TILE * blockIdx.x) + threadIdx.x) * N;
+//     int start = currentRow + index;
+//     int end = currentRow + N;
+
+//     if (currentRow > pivotRow && currentRow < N * N) {
+//         for (int i = currentRow; i < start + 1; i++) {
+//             U[i] = 0;
+//         }
+//         for (int i = start + 1; i < end; ++i) {
+//             U[i] = U[i] - (L[start] * U[pivotRow + (i - currentRow)]);
+//         }
+//     }
+// }
+
+// kernel without shared memory
+// __global__ void computeL(double* U, double *L, int N, int index) {
+//     int id = index + threadIdx.x + 1;
+//     int start = (index * N + index);
+//     L[start] = 1; // diagonal elements of L
+//     if (id < N) {
+//         L[id * N + index] = (U[id * N + index] / U[start]);
+//     }
+// }
+
+__global__ void computeL(double* U, double *L, int N, int index) {
     int id = index + threadIdx.x + 1;
-    int start = (index * n + index);
+    int start = (index * N + index);
+
+    __shared__ double pivot;
+    pivot = U[start];
     L[start] = 1; // diagonal elements of L
-    // for (int i = index + 1; i < n; ++i) {
-    //     L[i * n + index] = (U[i * n + index] / U[start]);
-    // }
-    if (id < n) {
-        L[id * n + index] = (U[id * n + index] / U[start]);
+    if (id < N) {
+        L[id * N + index] = U[id * N + index] / pivot;
     }
 }
 
@@ -119,8 +149,8 @@ void backwardSubstitution(double* U, double* Y, double* X, int N) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::cerr << "Usage: ./cuda " << "<input_file> " << "<output_file>" << std::endl;
+    if (argc < 4) {
+        std::cerr << "Usage: ./cuda " << "<input_file> <output_file> <timing_file>" << std::endl;
         exit(EXIT_FAILURE);
     }
     int N;
@@ -148,16 +178,21 @@ int main(int argc, char** argv) {
     cudaEventCreate(&stopLU);
     for (int i = 0; i < N; ++i) {
         cudaEventRecord(startLU);
-        scaleIndex<<<1,N>>>(d_U, d_L, N, i);
+
+        computeL<<<1,N>>>(d_U, d_L, N, i);
+
         cudaEventRecord(stopLU);
         cudaEventSynchronize(stopLU);
         float l1_time = 0;
         cudaEventElapsedTime(&l1_time,startLU, stopLU);
         l_time += std::chrono::duration<double>(l1_time/1000);
 
+        int sharedMem = N * sizeof(double);
         cudaDeviceSynchronize();
         cudaEventRecord(startLU);
-        elimination<<<gridConfig, blockConfig>>>(d_L, d_U, N, i, TILE);
+
+        rowElimination<<<gridConfig, blockConfig, sharedMem>>>(d_L, d_U, N, i);
+
         cudaEventRecord(stopLU);
         cudaEventSynchronize(stopLU);
         float u1_time = 0;
@@ -175,15 +210,22 @@ int main(int argc, char** argv) {
     auto end_sub = std::chrono::high_resolution_clock::now();
 
     lu_decomposition_time = l_time + u_time;
-    total_time = l_time + u_time + end_sub - start_sub;
+    total_time = read_time + l_time + u_time + end_sub - start_sub;
 
-    std::cout << "Read time: " << read_time.count() << "s" << std::endl;
-    std::cout << "L time: " << l_time.count() << "s" << std::endl;
-    std::cout << "U time: " << u_time.count() << "s" << std::endl;
-    std::cout << "LU decomposition time: " << lu_decomposition_time.count() << "s" << std::endl;
-    std::cout << "Total time: " << total_time.count() << "s" << std::endl;
+    // write timing to file
+    std::ofstream timingFile(argv[3]);
+    if (!timingFile) {
+        std::cerr << "Error opening file for writing: " << argv[3] << std::endl;
+        exit(EXIT_FAILURE);
+    }
+    timingFile << "Read time: " << read_time.count() << "s" << std::endl;
+    timingFile << "L time: " << l_time.count() << "s" << std::endl;
+    timingFile << "U time: " << u_time.count() << "s" << std::endl;
+    timingFile << "LU decomposition time: " << lu_decomposition_time.count() << "s" << std::endl;
+    timingFile << "Total time: " << total_time.count() << "s" << std::endl;
+    timingFile.close();
 
-    // write to file
+    // write output to file
     writeToFile(argv[2], N, L, U, X);
 
     // Free device memory
